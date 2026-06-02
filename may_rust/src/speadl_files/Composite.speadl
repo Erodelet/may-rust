@@ -1,0 +1,18 @@
+import ex1.simple.Simple
+import ex1.client.Client
+
+namespace ex1.composite {
+
+    component Composite {
+
+        provides service: Runnable = client.letsgo
+
+        part simple: Simple {
+
+        }
+
+        part client: Client {
+        	bind demarreur to simple.starter
+        }
+    }
+}

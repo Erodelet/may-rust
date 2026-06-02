@@ -1,0 +1,7 @@
+import ex1.Start
+
+namespace ex1.simple{
+	component Simple {
+		provides starter : Start
+	}
+}

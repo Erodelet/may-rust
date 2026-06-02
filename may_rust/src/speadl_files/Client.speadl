@@ -1,0 +1,8 @@
+import ex1.Start
+
+namespace ex1.client{
+	component Client {
+		requires demarreur : Start
+		provides letsgo : Runnable
+	}
+}

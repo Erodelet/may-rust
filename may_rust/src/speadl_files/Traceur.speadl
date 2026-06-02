@@ -1,0 +1,8 @@
+import ex1.Start
+
+namespace ex1.traceur{
+	component Traceur {
+		requires starter : Start
+		provides demarreur : Start
+	}
+}

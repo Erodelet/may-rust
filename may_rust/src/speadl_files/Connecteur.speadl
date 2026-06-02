@@ -1,0 +1,10 @@
+import ex1.Start
+
+namespace ex1.connecteur{
+	component Connecteur {
+		requires demarreur1 : Start
+		requires demarreur2 : Start
+		requires demarreur3 : Start
+		provides starter : Start
+	}
+}
