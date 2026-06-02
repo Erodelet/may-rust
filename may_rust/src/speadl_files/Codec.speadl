@@ -1,0 +1,6 @@
+namespace ex1.codec{
+	component Codec[Service] {
+		requires message : Service
+		provides crypt : Service
+	}
+}

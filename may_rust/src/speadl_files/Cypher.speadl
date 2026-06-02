@@ -1,0 +1,19 @@
+import ex1.codec.Codec
+import ex1.traceur.Traceur
+import ex1.Start
+
+namespace ex1.cypher{
+	component Cypher specializes Traceur {
+		
+		provides demarreur: Start = decodeur.crypt
+		
+		part codeur: Codec[Start] {
+			bind message to starter
+        }
+        
+        part decodeur: Codec[Start] {
+        	bind message to codeur.crypt
+        }
+        
+	}
+}

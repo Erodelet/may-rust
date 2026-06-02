@@ -1,0 +1,28 @@
+import ex1.simple.Simple
+import ex1.client.Client
+
+namespace ex1.multiclient {
+
+    component MultiClient {
+
+        provides service1: Runnable = client1.letsgo
+        provides service2: Runnable = client2.letsgo
+        provides service3: Runnable = client3.letsgo
+
+        part simple: Simple {
+
+        }
+
+        part client1: Client {
+        	bind demarreur to simple.starter
+        }
+        
+        part client2: Client {
+        	bind demarreur to simple.starter
+        }
+        
+        part client3: Client {
+        	bind demarreur to simple.starter
+        }
+    }
+}

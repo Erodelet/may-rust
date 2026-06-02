@@ -1,0 +1,34 @@
+import ex1.simple.Simple
+import ex1.client.Client
+import ex1.connecteur.Connecteur
+
+namespace ex1.multisimple {
+
+    component MultiSimple {
+
+        provides service: Runnable = client.letsgo
+
+
+        part simple1: Simple {
+
+        }
+        
+        part simple2: Simple {
+
+        }
+        
+        part simple3: Simple {
+
+        }
+
+        part client: Client {
+        	bind demarreur to connecteur.starter
+        }
+        
+        part connecteur: Connecteur {
+        	bind demarreur1 to simple1.starter
+        	bind demarreur2 to simple2.starter
+        	bind demarreur3 to simple3.starter
+        }
+    }
+}

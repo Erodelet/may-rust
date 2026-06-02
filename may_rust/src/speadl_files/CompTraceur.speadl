@@ -1,0 +1,23 @@
+import ex1.simple.Simple
+import ex1.client.Client
+import ex1.traceur.Traceur
+
+namespace ex1.comptraceur {
+
+    component CompTraceur {
+
+        provides service: Runnable = client.letsgo
+
+        part simple: Simple {
+
+        }
+        
+        part traceur: Traceur{
+        	bind starter to simple.starter
+        }
+
+        part client: Client {
+        	bind demarreur to traceur.demarreur
+        }
+    }
+}
