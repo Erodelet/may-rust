@@ -32,14 +32,11 @@ impl Parser {
         if self.accept(&t){
             return true
         }
-        panic!("Token inatendu : {:?}, attendait {:?}. Erreur de syntaxe {:?}.", t, self.token, caller);
+        panic!("Token inatendu : {:?}, attendait {:?}. Erreur de syntaxe {:?}.", self.token, t, caller);
     }
 
     fn ident(&mut self){
-        if self.accept(&Token::Identifier){
-            return
-        }
-        panic!("Erreur de syntaxe identifier");
+        self.expect(Token::Identifier, "identifier");
     }
 
     fn part(&mut self){
