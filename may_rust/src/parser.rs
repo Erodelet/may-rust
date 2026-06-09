@@ -1,11 +1,12 @@
-use crate::parser::lexer::token::Token;
+use crate::ast::Ast;
 use crate::parser::lexer::Lexer;
+use crate::parser::lexer::token::Token;
 
 pub mod lexer;
 
 pub struct Parser {
-    pub lexer : Lexer,
-    pub token : Token,
+    pub lexer: Lexer,
+    pub token: Token,
 }
 
 impl Parser {
@@ -21,110 +22,184 @@ impl Parser {
     }
 
     fn accept(&mut self, t: &Token) -> bool {
-        if t == &self.token{
+        if t == &self.token {
             self.next_token();
-            return true
+            return true;
         }
-        return false
+        return false;
     }
 
-    fn expect(&mut self, t:Token, caller:&str) -> bool {
-        if self.accept(&t){
-            return true
+    fn expect(&mut self, t: Token, caller: &str) -> bool {
+        if self.accept(&t) {
+            return true;
         }
-        panic!("Token inatendu : {:?}, attendait {:?}. Erreur de syntaxe {:?}.", self.token, t, caller);
+        panic!(
+            "Token inatendu : {:?}, attendait {:?}. Erreur de syntaxe {:?}.",
+            self.token, t, caller
+        );
     }
 
-    fn ident(&mut self){
-        self.expect(Token::Identifier, "identifier");
+    fn ident(&mut self) -> String {
+        match &self.token {
+            Token::Identifier(name) => {
+                let name = name.clone();
+                self.next_token();
+                name
+            }
+            _ => panic!(
+                "Token inatendu : {:?}, attendait un identifiant.",
+                self.token
+            ),
+        }
     }
 
-    fn part(&mut self){
-        while self.accept(&Token::Part){
-            self.ident();
+    fn path(&mut self) -> Vec<String> {
+        let mut path = vec![self.ident()];
+
+        while self.accept(&Token::Dot) {
+            path.push(self.ident());
+        }
+
+        path
+    }
+
+    fn generic(&mut self) -> Option<String> {
+        if self.accept(&Token::Lbracket) {
+            let generic = self.ident();
+            self.expect(Token::Rbracket, "generic");
+            Some(generic)
+        } else {
+            None
+        }
+    }
+
+    fn part(&mut self) -> Vec<Ast> {
+        let mut parts = Vec::new();
+
+        while self.accept(&Token::Part) {
+            let name = self.ident();
             self.expect(Token::Colon, "part1");
-            self.ident();
-            if self.accept(&Token::Lbracket){
-                self.ident();
-                self.expect(Token::Rbracket, "part2");
-            }
+            let type_name = self.ident();
+            let generic = self.generic();
+
             self.expect(Token::Lbrace, "part3");
-            while self.accept(&Token::Bind){
-                self.ident();
+            let mut binds = Vec::new();
+
+            while self.accept(&Token::Bind) {
+                let name = self.ident();
                 self.expect(Token::To, "part4");
-                self.ident();
-                if self.accept(&Token::Dot){
-                    self.ident();
+                let mut target = vec![self.ident()];
+
+                if self.accept(&Token::Dot) {
+                    target.push(self.ident());
                 }
+
+                binds.push(Ast::Bind { name, target });
             }
+
             self.expect(Token::Rbrace, "part5");
+
+            parts.push(Ast::Part {
+                name,
+                type_name,
+                generic,
+                body: Box::new(Ast::SEQ(binds)),
+            });
         }
+
+        parts
     }
 
-    fn provides(&mut self){
+    fn provides(&mut self) -> Vec<Ast> {
+        let mut nodes = Vec::new();
+
         if self.accept(&Token::Provides) {
-            self.ident();
-            self.expect(Token::Colon, "provides1");
-            self.ident();
-            if self.accept(&Token::Equals){
-                self.ident();
-                self.expect(Token::Dot, "provides2");
-                self.ident();
-            }
-            while self.accept(&Token::Provides) {
-                self.ident();
+            loop {
+                let name = self.ident();
                 self.expect(Token::Colon, "provides1");
-                self.ident();
-                if self.accept(&Token::Equals){
-                    self.ident();
+                let type_name = self.ident();
+                let source = if self.accept(&Token::Equals) {
+                    let left = self.ident();
                     self.expect(Token::Dot, "provides2");
-                    self.ident();
+                    let right = self.ident();
+                    Some(vec![left, right])
+                } else {
+                    None
+                };
+
+                nodes.push(Ast::Provides {
+                    name,
+                    type_name,
+                    source,
+                });
+
+                if !self.accept(&Token::Provides) {
+                    break;
                 }
             }
-            self.part();
+            nodes.extend(self.part());
         } else {
             panic!("Missing provides")
         }
+
+        nodes
     }
 
-    fn requires(&mut self){
-        while self.accept(&Token::Requires){
-            self.ident();
+    fn requires(&mut self) -> Vec<Ast> {
+        let mut nodes = Vec::new();
+
+        while self.accept(&Token::Requires) {
+            let name = self.ident();
             self.expect(Token::Colon, "requires");
-            self.ident();
+            let type_name = self.ident();
+            nodes.push(Ast::Requires { name, type_name });
         }
-        self.provides();
+
+        nodes.extend(self.provides());
+
+        nodes
     }
 
-    fn component(&mut self){
+    fn component(&mut self) -> Ast {
         self.expect(Token::Component, "component1");
-        self.ident();
-        if self.accept(&Token::Specializes){
-            self.ident();
-        }
-        if self.accept(&Token::Lbracket){
-            self.ident();
-            self.expect(Token::Rbracket, "component2");
-        }
+        let name = self.ident();
+        let specializes = if self.accept(&Token::Specializes) {
+            Some(self.ident())
+        } else {
+            None
+        };
+        let generic = self.generic();
+
         self.expect(Token::Lbrace, "component3");
-        self.requires();
+        let body = Ast::SEQ(self.requires());
         self.expect(Token::Rbrace, "component4");
+
+        Ast::Component {
+            name,
+            specializes,
+            generic,
+            body: Box::new(body),
+        }
     }
 
-    pub fn namespace(&mut self){
-        while self.accept(&Token::Import){
-            self.ident();
-            while self.accept(&Token::Dot) {
-                self.ident();
-            }
+    pub fn namespace(&mut self) -> Ast {
+        let mut nodes = Vec::new();
+
+        while self.accept(&Token::Import) {
+            nodes.push(Ast::Import { path: self.path() });
         }
+
         self.expect(Token::Namespace, "namespace1");
-        self.ident();
-        while self.accept(&Token::Dot) {
-            self.ident();
-        }
+        let path = self.path();
         self.expect(Token::Lbrace, "namespace2");
-        self.component();
+        let body = self.component();
         self.expect(Token::Rbrace, "namespace3");
+
+        nodes.push(Ast::Namespace {
+            path,
+            body: Box::new(body),
+        });
+
+        Ast::SEQ(nodes)
     }
 }

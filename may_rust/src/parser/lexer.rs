@@ -95,8 +95,7 @@ impl Lexer {
                     "part" => Token::Part,
                     "bind" => Token::Bind,
                     "to" => Token::To,
-                    //_ => Token::Identifier(ident),
-                    _ => Token::Identifier,
+                    _ => Token::Identifier(ident),
                 }
             }
 

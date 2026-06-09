@@ -1,7 +1,6 @@
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Token {
-    //Identifier(String),
-    Identifier,
+    Identifier(String),
 
     Dot,
     Colon,
