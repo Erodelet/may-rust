@@ -29,13 +29,14 @@ impl Parser {
         return false;
     }
 
-    fn expect(&mut self, t: Token, caller: &str) -> bool {
-        if self.accept(&t) {
-            return true;
+    fn expect(&mut self, expected: Token, context: &str) {
+        if self.accept(&expected) {
+            return;
         }
+
         panic!(
-            "Token inatendu : {:?}, attendait {:?}. Erreur de syntaxe {:?}.",
-            self.token, t, caller
+            "Syntax error {context}: found {:?}, expected {:?}.",
+            self.token, expected
         );
     }
 
@@ -67,10 +68,10 @@ impl Parser {
         let type_name = self.ident();
         let name = self.ident();
 
-        self.expect(Token::Lparentheses, "function1");
-        self.expect(Token::Rparentheses, "function2");
-        self.expect(Token::Lbrace, "function3");
-        self.expect(Token::Rbrace, "function4");
+        self.expect(Token::Lparentheses, "after function name");
+        self.expect(Token::Rparentheses, "after function parameter list");
+        self.expect(Token::Lbrace, "before function body");
+        self.expect(Token::Rbrace, "after function body");
 
         Ast::Function {
             name,
@@ -84,17 +85,17 @@ impl Parser {
         let mut nodes = Vec::new();
 
         while self.accept(&Token::Package) {
-            nodes.push(Ast::Package { name : self.ident() });
-            self.expect(Token::Semicolon, "class1");
+            nodes.push(Ast::Package { name: self.ident() });
+            self.expect(Token::Semicolon, "after package declaration");
         }
 
         let access = self.access();
 
-        self.expect(Token::Class, "class2");
+        self.expect(Token::Class, "before class name");
         let name = self.ident();
-        self.expect(Token::Lbrace, "class3");
+        self.expect(Token::Lbrace, "before class body");
         let body = self.function();
-        self.expect(Token::Rbrace, "class4");
+        self.expect(Token::Rbrace, "after class body");
 
         nodes.push(Ast::Class {
             name,

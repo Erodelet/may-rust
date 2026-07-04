@@ -4,11 +4,11 @@ use std::error::Error;
 use std::fs::read_to_string;
 
 pub mod ast;
-pub mod parser;
 pub mod gen_python;
+pub mod parser;
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let path = "./src/speadl_files/Composite.speadl";
+    let path = "../examples/speadl/Simple.speadl";
 
     let source = read_to_string(path)?;
 

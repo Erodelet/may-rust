@@ -1,3 +1,15 @@
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceReference {
+    pub part_name: String,
+    pub service_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProvidedServiceImplementation {
+    Local,
+    Delegated(ServiceReference),
+}
+
 #[allow(non_camel_case_types)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Ast {
@@ -27,7 +39,7 @@ pub enum Ast {
     Provides {
         name: String,
         type_name: String,
-        source: Option<Vec<String>>,
+        implementation: ProvidedServiceImplementation,
     },
 
     Part {

@@ -1,4 +1,4 @@
-use crate::ast::Ast;
+use crate::ast::{Ast, ProvidedServiceImplementation, ServiceReference};
 use crate::parser::lexer::Lexer;
 use crate::parser::lexer::token::Token;
 
@@ -29,13 +29,14 @@ impl Parser {
         return false;
     }
 
-    fn expect(&mut self, t: Token, caller: &str) -> bool {
-        if self.accept(&t) {
-            return true;
+    fn expect(&mut self, expected: Token, context: &str) {
+        if self.accept(&expected) {
+            return;
         }
+
         panic!(
-            "Token inatendu : {:?}, attendait {:?}. Erreur de syntaxe {:?}.",
-            self.token, t, caller
+            "Syntax error {context}: found {:?}, expected {:?}.",
+            self.token, expected
         );
     }
 
@@ -66,7 +67,7 @@ impl Parser {
     fn generic(&mut self) -> Option<String> {
         if self.accept(&Token::Lbracket) {
             let generic = self.ident();
-            self.expect(Token::Rbracket, "generic");
+            self.expect(Token::Rbracket, "after generic parameter name");
             Some(generic)
         } else {
             None
@@ -78,16 +79,16 @@ impl Parser {
 
         while self.accept(&Token::Part) {
             let name = self.ident();
-            self.expect(Token::Colon, "part1");
+            self.expect(Token::Colon, "after part name");
             let type_name = self.ident();
             let generic = self.generic();
 
-            self.expect(Token::Lbrace, "part2");
+            self.expect(Token::Lbrace, "before part body");
             let mut binds = Vec::new();
 
             while self.accept(&Token::Bind) {
                 let name = self.ident();
-                self.expect(Token::To, "part3");
+                self.expect(Token::To, "after bind name");
                 let mut target = vec![self.ident()];
 
                 if self.accept(&Token::Dot) {
@@ -97,7 +98,7 @@ impl Parser {
                 binds.push(Ast::Bind { name, target });
             }
 
-            self.expect(Token::Rbrace, "part4");
+            self.expect(Token::Rbrace, "after part body");
 
             parts.push(Ast::Part {
                 name,
@@ -116,21 +117,24 @@ impl Parser {
         if self.accept(&Token::Provides) {
             loop {
                 let name = self.ident();
-                self.expect(Token::Colon, "provides1");
+                self.expect(Token::Colon, "after provided service name");
                 let type_name = self.ident();
-                let source = if self.accept(&Token::Equals) {
-                    let left = self.ident();
-                    self.expect(Token::Dot, "provides2");
-                    let right = self.ident();
-                    Some(vec![left, right])
+                let implementation = if self.accept(&Token::Equals) {
+                    let part_name = self.ident();
+                    self.expect(Token::Dot, "between delegated part and service name");
+                    let service_name = self.ident();
+                    ProvidedServiceImplementation::Delegated(ServiceReference {
+                        part_name,
+                        service_name,
+                    })
                 } else {
-                    None
+                    ProvidedServiceImplementation::Local
                 };
 
                 nodes.push(Ast::Provides {
                     name,
                     type_name,
-                    source,
+                    implementation,
                 });
 
                 if !self.accept(&Token::Provides) {
@@ -139,7 +143,10 @@ impl Parser {
             }
             nodes.extend(self.part());
         } else {
-            panic!("Missing provides")
+            panic!(
+                "Syntax error in component body: expected at least one `provides name: Type` declaration, found {:?}.",
+                self.token
+            )
         }
 
         nodes
@@ -150,7 +157,7 @@ impl Parser {
 
         while self.accept(&Token::Requires) {
             let name = self.ident();
-            self.expect(Token::Colon, "requires");
+            self.expect(Token::Colon, "after required service name");
             let type_name = self.ident();
             nodes.push(Ast::Requires { name, type_name });
         }
@@ -161,7 +168,7 @@ impl Parser {
     }
 
     fn component(&mut self) -> Ast {
-        self.expect(Token::Component, "component1");
+        self.expect(Token::Component, "before component name");
         let name = self.ident();
         let specializes = if self.accept(&Token::Specializes) {
             Some(self.ident())
@@ -170,9 +177,9 @@ impl Parser {
         };
         let generic = self.generic();
 
-        self.expect(Token::Lbrace, "component2");
+        self.expect(Token::Lbrace, "before component body");
         let body = Ast::SEQ(self.requires());
-        self.expect(Token::Rbrace, "component3");
+        self.expect(Token::Rbrace, "after component body");
 
         Ast::Component {
             name,
@@ -189,11 +196,11 @@ impl Parser {
             nodes.push(Ast::Import { path: self.path() });
         }
 
-        self.expect(Token::Namespace, "namespace1");
+        self.expect(Token::Namespace, "before namespace path");
         let path = self.path();
-        self.expect(Token::Lbrace, "namespace2");
+        self.expect(Token::Lbrace, "before namespace body");
         let body = self.component();
-        self.expect(Token::Rbrace, "namespace3");
+        self.expect(Token::Rbrace, "after namespace body");
 
         nodes.push(Ast::Namespace {
             path,
