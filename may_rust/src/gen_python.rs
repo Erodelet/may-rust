@@ -1,17 +1,30 @@
 use crate::ast::{Ast, ProvidedServiceImplementation};
+use crate::modules::python_ast::{
+    PyAlias, PyArg, PyArguments, PyClassDef, PyExpr, PyFunctionDef, PyImportFrom, PyKeyword,
+    PyModule, PyStmt,
+};
+use std::error::Error;
 use std::fs::{self, create_dir_all};
-use std::path::PathBuf;
-
-//deal with specializes
-//no analog to generic in py
+use std::io;
+use std::path::{Path, PathBuf};
 
 const GENERATED_PYTHON_EXAMPLES_DIR: &str = "examples/python";
 
 pub struct GenPython {
     ast: Ast,
-    path: Vec<String>,
+    options: GeneratorOptions,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct GeneratorOptions {
+    keep_intermediate: bool,
+    output: Option<PathBuf>,
+}
+
+struct PythonComponent {
+    namespace: Vec<String>,
     imports: Vec<ImportList>,
-    component_name: String,
+    name: String,
     required_services: Vec<RequiredService>,
     provided_services: Vec<ProvidedService>,
     part_instances: Vec<PartInstance>,
@@ -35,6 +48,11 @@ struct ProvidedService {
 struct PartInstance {
     name: String,
     type_name: String,
+    bindings: Vec<PartBinding>,
+}
+
+struct PartBinding {
+    parameter_name: String,
     target: Vec<String>,
 }
 
@@ -42,64 +60,115 @@ impl GenPython {
     pub fn new(ast: Ast) -> Self {
         Self {
             ast,
-            path: Vec::new(),
-            imports: Vec::new(),
-            component_name: String::new(),
+            options: GeneratorOptions::default(),
+        }
+    }
+
+    pub fn with_options(ast: Ast, options: GeneratorOptions) -> Self {
+        Self { ast, options }
+    }
+
+    pub fn with_keep_intermediate(mut self, keep_intermediate: bool) -> Self {
+        self.options.keep_intermediate = keep_intermediate;
+        self
+    }
+
+    pub fn with_output(mut self, output: Option<PathBuf>) -> Self {
+        self.options.output = output;
+        self
+    }
+
+    pub fn generate(&self) -> Result<(), Box<dyn Error>> {
+        let component = PythonComponent::from_speadl_ast(&self.ast)?;
+        let output_path = component.output_path(self.options.output.as_deref());
+        let python_module = component.to_python_module();
+
+        if let Some(parent) = output_path.parent() {
+            create_dir_all(parent)?;
+        }
+
+        let mut source = if self.options.keep_intermediate {
+            python_module.unparse_and_keep_intermediate(&intermediate_output_path(&output_path))?
+        } else {
+            python_module.unparse()?
+        };
+
+        if !source.ends_with('\n') {
+            source.push('\n');
+        }
+
+        fs::write(output_path, source)?;
+
+        Ok(())
+    }
+}
+
+impl PythonComponent {
+    fn from_speadl_ast(ast: &Ast) -> Result<Self, Box<dyn Error>> {
+        let Ast::SEQ(nodes) = ast else {
+            return Err(invalid_ast(
+                "Python generation expects a top-level sequence",
+            ));
+        };
+
+        let mut imports = Vec::new();
+
+        for node in nodes {
+            match node {
+                Ast::Import { path } => {
+                    imports.push(ImportList { path: path.clone() });
+                }
+                Ast::Namespace { path, body } => {
+                    return Self::from_namespace(path.clone(), imports, body);
+                }
+                _ => {}
+            }
+        }
+
+        Err(invalid_ast(
+            "Python generation expects a namespace after imports",
+        ))
+    }
+
+    fn from_namespace(
+        namespace: Vec<String>,
+        imports: Vec<ImportList>,
+        body: &Ast,
+    ) -> Result<Self, Box<dyn Error>> {
+        let Ast::Component { name, body, .. } = body else {
+            return Err(invalid_ast(
+                "Python generation expects a component in the namespace",
+            ));
+        };
+
+        let mut component = Self {
+            namespace,
+            imports,
+            name: name.clone(),
             required_services: Vec::new(),
             provided_services: Vec::new(),
             part_instances: Vec::new(),
-        }
+        };
+
+        component.read_component_body(body)?;
+
+        Ok(component)
     }
 
-    pub fn generate(&mut self) {
-        match self.ast.clone() {
-            Ast::SEQ(v) => {
-                self.namespace(&v, 0);
-            }
-            _ => {}
-        }
-    }
+    fn read_component_body(&mut self, body: &Ast) -> Result<(), Box<dyn Error>> {
+        let Ast::SEQ(nodes) = body else {
+            return Err(invalid_ast(
+                "Python generation expects a component body sequence",
+            ));
+        };
 
-    fn namespace(&mut self, v: &Vec<Ast>, i: usize) {
-        match v[i].clone() {
-            Ast::Import { path } => {
-                self.imports.push(ImportList { path });
-                self.namespace(v, i + 1);
-            }
-            Ast::Namespace { path, body } => {
-                self.path = path;
-                self.component(body);
-            }
-            _ => {}
-        }
-    }
-
-    fn component(&mut self, b: Box<Ast>) {
-        match *b {
-            Ast::Component { name, body, .. } => {
-                self.component_name = name;
-                self.service(body);
-            }
-            _ => {}
-        }
-    }
-
-    fn service(&mut self, b: Box<Ast>) {
-        match *b {
-            Ast::SEQ(v) => {
-                self.vec_service(&v, 0);
-            }
-            _ => {}
-        }
-    }
-
-    fn vec_service(&mut self, v: &Vec<Ast>, i: usize) {
-        if i < v.len() {
-            match v[i].clone() {
+        for node in nodes {
+            match node {
                 Ast::Requires { name, type_name } => {
-                    self.required_services
-                        .push(RequiredService { name, type_name });
-                    self.vec_service(v, i + 1);
+                    self.required_services.push(RequiredService {
+                        name: name.clone(),
+                        type_name: type_name.clone(),
+                    });
                 }
                 Ast::Provides {
                     name,
@@ -107,11 +176,10 @@ impl GenPython {
                     implementation,
                 } => {
                     self.provided_services.push(ProvidedService {
-                        name,
-                        type_name,
-                        implementation,
+                        name: name.clone(),
+                        type_name: type_name.clone(),
+                        implementation: implementation.clone(),
                     });
-                    self.vec_service(v, i + 1);
                 }
                 Ast::Part {
                     name,
@@ -119,168 +187,221 @@ impl GenPython {
                     body,
                     ..
                 } => {
-                    match *body {
-                        Ast::SEQ(v) => {
-                            if v.len() != 0 {
-                                match v[0].clone() {
-                                    Ast::Bind { name, target } => {
-                                        self.part_instances.push(PartInstance {
-                                            name,
-                                            type_name,
-                                            target,
-                                        });
-                                    }
-                                    _ => {
-                                        self.part_instances.push(PartInstance {
-                                            name,
-                                            type_name,
-                                            target: Vec::new(),
-                                        });
-                                    }
-                                }
-                            } else {
-                                self.part_instances.push(PartInstance {
-                                    name,
-                                    type_name,
-                                    target: Vec::new(),
-                                });
-                            }
-                        }
-                        _ => {}
-                    }
-                    self.vec_service(v, i + 1);
+                    self.part_instances.push(PartInstance {
+                        name: name.clone(),
+                        type_name: type_name.clone(),
+                        bindings: part_bindings(body)?,
+                    });
                 }
                 _ => {}
             }
-        } else {
-            self.write_file();
+        }
+
+        Ok(())
+    }
+
+    fn to_python_module(&self) -> PyModule {
+        let mut body = Vec::new();
+
+        for import in &self.imports {
+            body.push(PyStmt::ImportFrom(PyImportFrom {
+                module: import.path.join("."),
+                names: vec![PyAlias::import_all()],
+                level: 0,
+            }));
+        }
+
+        body.push(PyStmt::ClassDef(PyClassDef {
+            name: self.name.clone(),
+            body: self.class_body(),
+        }));
+
+        PyModule { body }
+    }
+
+    fn class_body(&self) -> Vec<PyStmt> {
+        let mut body = vec![self.init_function()];
+
+        for provided_service in &self.provided_services {
+            body.push(provided_service.to_python_function());
+        }
+
+        body
+    }
+
+    fn init_function(&self) -> PyStmt {
+        let mut args = vec![PyArg::without_annotation("self")];
+
+        for required_service in &self.required_services {
+            args.push(PyArg::with_annotation(
+                required_service.name.clone(),
+                python_type_annotation(&required_service.type_name),
+            ));
+        }
+
+        let mut body = Vec::new();
+
+        for required_service in &self.required_services {
+            body.push(PyStmt::Assign {
+                targets: vec![self_store_attribute(&required_service.name)],
+                value: PyExpr::load_name(required_service.name.clone()),
+            });
+        }
+
+        for part_instance in &self.part_instances {
+            body.push(part_instance.to_python_assignment());
+        }
+
+        body.push(PyStmt::Return(None));
+
+        PyStmt::FunctionDef(PyFunctionDef {
+            name: String::from("__init__"),
+            args: PyArguments::new(args),
+            body,
+            returns: None,
+        })
+    }
+
+    fn output_path(&self, output: Option<&Path>) -> PathBuf {
+        match output {
+            Some(path) if output_target_is_file(path) => path.to_path_buf(),
+            Some(root) => self.output_path_under(root),
+            None => self.output_path_under(&default_output_root()),
         }
     }
 
-    fn write_file(&mut self) {
-        //Create folder
-        let mut f_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        f_path.push("..");
-        f_path.push(GENERATED_PYTHON_EXAMPLES_DIR);
+    fn output_path_under(&self, root: &Path) -> PathBuf {
+        let mut path = root.to_path_buf();
 
-        let mut i = 0;
-        while i < self.path.len() {
-            f_path.push(&self.path[i]);
-            i += 1;
+        for namespace_part in &self.namespace {
+            path.push(namespace_part);
         }
 
-        create_dir_all(&f_path).expect("failed to create Python output directory");
-
-        //Create file path
-        f_path.push(format!("{}.py", self.component_name));
-
-        let mut wr = String::new();
-        //Add imports
-        i = 0;
-        while i < self.imports.len() {
-            let import = &self.imports[i];
-
-            wr.push_str("from ");
-            wr += &import.path[0];
-            let mut j = 1;
-            while j < import.path.len() {
-                wr.push('.');
-                wr += &import.path[j];
-                j += 1;
-            }
-            wr.push_str(" import *");
-            wr.push('\n');
-            i += 1;
-        }
-
-        //Create class
-        wr.push_str("\nclass ");
-        wr += &self.component_name;
-        wr.push_str(" :\n");
-
-        //Create init
-        wr.push_str("\tdef __init__(self");
-        let mut body = String::new();
-
-        i = 0;
-        while i < self.required_services.len() {
-            let required_service = &self.required_services[i];
-
-            wr.push_str(", ");
-            wr += &required_service.name;
-            wr.push_str(" : ");
-            wr += &required_service.type_name;
-
-            body.push_str("\t\tself.");
-            body += &required_service.name;
-            body.push_str(" = ");
-            body += &required_service.name;
-            body.push('\n');
-
-            i += 1
-        }
-
-        i = 0;
-        while i < self.part_instances.len() {
-            let part_instance = &self.part_instances[i];
-
-            body.push_str("\t\tself.");
-            body += &part_instance.name;
-            body.push_str(" = ");
-            body += &part_instance.type_name;
-            body.push('(');
-
-            let mut j = 0;
-            let target = &part_instance.target;
-
-            if target.len() != 0 {
-                body.push_str("self");
-            }
-
-            while j < target.len() {
-                body.push('.');
-                body += &target[j];
-
-                j += 1;
-            }
-
-            body.push_str(")\n");
-
-            i += 1;
-        }
-
-        wr.push_str("):\n");
-
-        body.push_str("\t\treturn\n");
-        wr += &body;
-
-        //Add provided methods
-        i = 0;
-        while i < self.provided_services.len() {
-            let provided_service = &self.provided_services[i];
-
-            wr.push_str("\n\tdef ");
-            wr += &provided_service.name;
-            wr.push_str("(self) -> ");
-            wr += &provided_service.type_name;
-            wr.push_str(":\n\t\treturn");
-
-            match &provided_service.implementation {
-                ProvidedServiceImplementation::Local => {}
-                ProvidedServiceImplementation::Delegated(service_reference) => {
-                    wr.push_str(" self");
-                    wr.push('.');
-                    wr += &service_reference.part_name;
-                    wr.push('.');
-                    wr += &service_reference.service_name;
-                    wr.push_str("()\n");
-                }
-            }
-
-            i += 1;
-        }
-
-        //Create and fill file
-        fs::write(&f_path, wr).expect("failed to write Python output file");
+        path.push(format!("{}.py", self.name));
+        path
     }
+}
+
+impl GeneratorOptions {
+    pub fn keep_intermediate(mut self, keep_intermediate: bool) -> Self {
+        self.keep_intermediate = keep_intermediate;
+        self
+    }
+
+    pub fn output(mut self, output: Option<PathBuf>) -> Self {
+        self.output = output;
+        self
+    }
+}
+
+impl ProvidedService {
+    fn to_python_function(&self) -> PyStmt {
+        PyStmt::FunctionDef(PyFunctionDef {
+            name: self.name.clone(),
+            args: PyArguments::new(vec![PyArg::without_annotation("self")]),
+            body: vec![PyStmt::Return(self.return_value())],
+            returns: Some(python_type_annotation(&self.type_name)),
+        })
+    }
+
+    fn return_value(&self) -> Option<PyExpr> {
+        match &self.implementation {
+            ProvidedServiceImplementation::Local => None,
+            ProvidedServiceImplementation::Delegated(service_reference) => Some(PyExpr::call(
+                self_load_path(&[
+                    service_reference.part_name.clone(),
+                    service_reference.service_name.clone(),
+                ]),
+                Vec::new(),
+            )),
+        }
+    }
+}
+
+impl PartInstance {
+    fn to_python_assignment(&self) -> PyStmt {
+        PyStmt::Assign {
+            targets: vec![self_store_attribute(&self.name)],
+            value: PyExpr::call_with_keywords(
+                PyExpr::load_name(self.type_name.clone()),
+                self.bindings
+                    .iter()
+                    .map(PartBinding::to_python_keyword)
+                    .collect(),
+            ),
+        }
+    }
+}
+
+impl PartBinding {
+    fn to_python_keyword(&self) -> PyKeyword {
+        PyKeyword::named(self.parameter_name.clone(), self_load_path(&self.target))
+    }
+}
+
+fn part_bindings(body: &Ast) -> Result<Vec<PartBinding>, Box<dyn Error>> {
+    let Ast::SEQ(nodes) = body else {
+        return Err(invalid_ast(
+            "Python generation expects a part body sequence",
+        ));
+    };
+
+    let mut bindings = Vec::new();
+
+    for node in nodes {
+        if let Ast::Bind { name, target } = node {
+            bindings.push(PartBinding {
+                parameter_name: name.clone(),
+                target: target.clone(),
+            });
+        }
+    }
+
+    Ok(bindings)
+}
+
+fn python_type_annotation(type_name: &str) -> PyExpr {
+    PyExpr::load_name(type_name)
+}
+
+fn self_store_attribute(name: &str) -> PyExpr {
+    PyExpr::store_attribute(PyExpr::load_name("self"), name)
+}
+
+fn self_load_path(path: &[String]) -> PyExpr {
+    let mut expr = PyExpr::load_name("self");
+
+    for item in path {
+        expr = PyExpr::load_attribute(expr, item);
+    }
+
+    expr
+}
+
+fn invalid_ast(message: &str) -> Box<dyn Error> {
+    Box::new(io::Error::new(
+        io::ErrorKind::InvalidData,
+        message.to_string(),
+    ))
+}
+
+fn default_output_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join(GENERATED_PYTHON_EXAMPLES_DIR)
+}
+
+fn output_target_is_file(path: &Path) -> bool {
+    !path.is_dir() && path.extension().is_some()
+}
+
+fn intermediate_output_path(output_path: &Path) -> PathBuf {
+    let file_stem = output_path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("python_ast_unparse");
+    let mut path = output_path.to_path_buf();
+
+    path.set_file_name(format!("{file_stem}.python_ast_unparse.py"));
+    path
 }
