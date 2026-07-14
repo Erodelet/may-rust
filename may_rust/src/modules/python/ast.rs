@@ -15,6 +15,7 @@ pub enum PyStmt {
     ImportFrom(PyImportFrom),
     ClassDef(PyClassDef),
     FunctionDef(PyFunctionDef),
+    Expr(PyExpr),
     Return(Option<PyExpr>),
     Assign { targets: Vec<PyExpr>, value: PyExpr },
     Pass,
@@ -36,6 +37,7 @@ pub struct PyAlias {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PyClassDef {
     pub name: String,
+    pub bases: Vec<PyExpr>,
     pub body: Vec<PyStmt>,
 }
 
@@ -134,10 +136,10 @@ impl PyModule {
         let script = format!(
             r#"import ast
 
-def class_def(name, body):
+def class_def(name, bases, body):
     fields = {{
         "name": name,
-        "bases": [],
+        "bases": bases,
         "keywords": [],
         "body": body,
         "decorator_list": [],
@@ -196,6 +198,7 @@ impl PyStmt {
             Self::ImportFrom(import_from) => import_from.to_python_ast_constructor(),
             Self::ClassDef(class_def) => class_def.to_python_ast_constructor(),
             Self::FunctionDef(function_def) => function_def.to_python_ast_constructor(),
+            Self::Expr(expr) => format!("ast.Expr(value={})", expr.to_python_ast_constructor()),
             Self::Return(value) => match value {
                 Some(value) => format!("ast.Return(value={})", value.to_python_ast_constructor()),
                 None => String::from("ast.Return(value=None)"),
@@ -241,8 +244,9 @@ impl PyAlias {
 impl PyClassDef {
     fn to_python_ast_constructor(&self) -> String {
         format!(
-            "class_def(name={}, body={})",
+            "class_def(name={}, bases={}, body={})",
             py_string(&self.name),
+            py_list(self.bases.iter().map(PyExpr::to_python_ast_constructor)),
             py_list(self.body.iter().map(PyStmt::to_python_ast_constructor))
         )
     }

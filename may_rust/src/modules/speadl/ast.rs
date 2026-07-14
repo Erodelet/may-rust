@@ -5,7 +5,7 @@ pub struct ServiceReference {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct  Specializes {
+pub struct Specializes {
     pub parent: String,
     pub parent_file: Option<Box<Ast>>,
 }
@@ -23,6 +23,7 @@ pub enum Ast {
 
     Import {
         path: Vec<String>,
+        ast: Option<Box<Ast>>,
     },
 
     Namespace {
