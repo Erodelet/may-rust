@@ -5,6 +5,12 @@ pub struct ServiceReference {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Specializes {
+    pub parent: String,
+    pub parent_file: Option<Box<Ast>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProvidedServiceImplementation {
     Local,
     Delegated(ServiceReference),
@@ -17,6 +23,7 @@ pub enum Ast {
 
     Import {
         path: Vec<String>,
+        ast: Option<Box<Ast>>,
     },
 
     Namespace {
@@ -26,7 +33,7 @@ pub enum Ast {
 
     Component {
         name: String,
-        specializes: Option<String>,
+        specializes: Option<Specializes>,
         generic: Option<String>,
         body: Box<Ast>,
     },

@@ -1,8 +1,8 @@
-use crate::ast::{Ast, ProvidedServiceImplementation};
-use crate::modules::python_ast::{
+use super::ast::{
     PyAlias, PyArg, PyArguments, PyClassDef, PyExpr, PyFunctionDef, PyImportFrom, PyKeyword,
     PyModule, PyStmt,
 };
+use crate::modules::speadl::ast::{Ast, ProvidedServiceImplementation, Specializes};
 use std::error::Error;
 use std::fs::{self, create_dir_all};
 use std::io;
@@ -25,6 +25,7 @@ struct PythonComponent {
     namespace: Vec<String>,
     imports: Vec<ImportList>,
     name: String,
+    specializes: Option<SpecializedParent>,
     required_services: Vec<RequiredService>,
     provided_services: Vec<ProvidedService>,
     part_instances: Vec<PartInstance>,
@@ -37,6 +38,11 @@ struct ImportList {
 struct RequiredService {
     name: String,
     type_name: String,
+}
+
+struct SpecializedParent {
+    name: String,
+    required_services: Vec<RequiredService>,
 }
 
 struct ProvidedService {
@@ -115,7 +121,7 @@ impl PythonComponent {
 
         for node in nodes {
             match node {
-                Ast::Import { path } => {
+                Ast::Import { path, .. } => {
                     imports.push(ImportList { path: path.clone() });
                 }
                 Ast::Namespace { path, body } => {
@@ -135,7 +141,13 @@ impl PythonComponent {
         imports: Vec<ImportList>,
         body: &Ast,
     ) -> Result<Self, Box<dyn Error>> {
-        let Ast::Component { name, body, .. } = body else {
+        let Ast::Component {
+            name,
+            specializes,
+            body,
+            ..
+        } = body
+        else {
             return Err(invalid_ast(
                 "Python generation expects a component in the namespace",
             ));
@@ -145,6 +157,7 @@ impl PythonComponent {
             namespace,
             imports,
             name: name.clone(),
+            specializes: specialized_parent(specializes.as_ref())?,
             required_services: Vec::new(),
             provided_services: Vec::new(),
             part_instances: Vec::new(),
@@ -213,6 +226,7 @@ impl PythonComponent {
 
         body.push(PyStmt::ClassDef(PyClassDef {
             name: self.name.clone(),
+            bases: self.class_bases(),
             body: self.class_body(),
         }));
 
@@ -229,10 +243,17 @@ impl PythonComponent {
         body
     }
 
+    fn class_bases(&self) -> Vec<PyExpr> {
+        self.specializes
+            .as_ref()
+            .map(|parent| vec![PyExpr::load_name(parent.name.clone())])
+            .unwrap_or_default()
+    }
+
     fn init_function(&self) -> PyStmt {
         let mut args = vec![PyArg::without_annotation("self")];
 
-        for required_service in &self.required_services {
+        for required_service in self.init_required_services() {
             args.push(PyArg::with_annotation(
                 required_service.name.clone(),
                 python_type_annotation(&required_service.type_name),
@@ -240,6 +261,20 @@ impl PythonComponent {
         }
 
         let mut body = Vec::new();
+
+        if let Some(parent) = &self.specializes {
+            body.push(PyStmt::Expr(PyExpr::call(
+                PyExpr::load_attribute(
+                    PyExpr::call(PyExpr::load_name("super"), Vec::new()),
+                    "__init__",
+                ),
+                parent
+                    .required_services
+                    .iter()
+                    .map(|required_service| PyExpr::load_name(required_service.name.clone()))
+                    .collect(),
+            )));
+        }
 
         for required_service in &self.required_services {
             body.push(PyStmt::Assign {
@@ -262,6 +297,27 @@ impl PythonComponent {
         })
     }
 
+    fn init_required_services(&self) -> Vec<&RequiredService> {
+        let mut required_services = Vec::new();
+
+        if let Some(parent) = &self.specializes {
+            for required_service in &parent.required_services {
+                required_services.push(required_service);
+            }
+        }
+
+        for required_service in &self.required_services {
+            if !required_services
+                .iter()
+                .any(|existing| existing.name == required_service.name)
+            {
+                required_services.push(required_service);
+            }
+        }
+
+        required_services
+    }
+
     fn output_path(&self, output: Option<&Path>) -> PathBuf {
         match output {
             Some(path) if output_target_is_file(path) => path.to_path_buf(),
@@ -280,6 +336,67 @@ impl PythonComponent {
         path.push(format!("{}.py", self.name));
         path
     }
+}
+
+fn specialized_parent(
+    specializes: Option<&Specializes>,
+) -> Result<Option<SpecializedParent>, Box<dyn Error>> {
+    let Some(specializes) = specializes else {
+        return Ok(None);
+    };
+
+    let Some(parent_file) = &specializes.parent_file else {
+        return Ok(Some(SpecializedParent {
+            name: specializes.parent.clone(),
+            required_services: Vec::new(),
+        }));
+    };
+
+    Ok(Some(SpecializedParent {
+        name: specializes.parent.clone(),
+        required_services: component_required_services(parent_file)?,
+    }))
+}
+
+fn component_required_services(ast: &Ast) -> Result<Vec<RequiredService>, Box<dyn Error>> {
+    let Ast::SEQ(nodes) = ast else {
+        return Err(invalid_ast(
+            "Python generation expects a top-level sequence",
+        ));
+    };
+
+    for node in nodes {
+        if let Ast::Namespace { body, .. } = node {
+            let Ast::Component { body, .. } = body.as_ref() else {
+                return Err(invalid_ast(
+                    "Python generation expects a component in the namespace",
+                ));
+            };
+            let Ast::SEQ(nodes) = body.as_ref() else {
+                return Err(invalid_ast(
+                    "Python generation expects a component body sequence",
+                ));
+            };
+
+            return Ok(nodes
+                .iter()
+                .filter_map(|node| {
+                    if let Ast::Requires { name, type_name } = node {
+                        Some(RequiredService {
+                            name: name.clone(),
+                            type_name: type_name.clone(),
+                        })
+                    } else {
+                        None
+                    }
+                })
+                .collect());
+        }
+    }
+
+    Err(invalid_ast(
+        "Python generation expects a namespace after imports",
+    ))
 }
 
 impl GeneratorOptions {

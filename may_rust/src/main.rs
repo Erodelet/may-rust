@@ -1,41 +1,121 @@
-use crate::gen_python::GenPython;
-use crate::parser::Parser;
+use crate::modules::python::GenPython;
+use crate::modules::speadl::ast::Ast;
+use crate::modules::speadl::parser::Parser;
+use std::collections::HashSet;
 use std::env;
 use std::error::Error;
 use std::fs::{read_dir, read_to_string};
 use std::io;
 use std::path::{Path, PathBuf};
 
-pub mod ast;
-pub mod gen_python;
 pub mod modules;
-pub mod parser;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let options = CliOptions::parse()?;
     let input_paths = options.input_paths()?;
     let output_paths = options.output_paths(input_paths.len())?;
+    let mut parsed_inputs = Vec::new();
 
-    for (input_path, output_path) in input_paths.into_iter().zip(output_paths.into_iter()) {
-        generate_python(&input_path, output_path, options.keep_intermediate)?;
+    for (input_path, output_path) in input_paths.into_iter().zip(output_paths) {
+        parsed_inputs.push((output_path, parse_input(&input_path)?));
+    }
+
+    let dependency_components = dependency_component_names(&parsed_inputs);
+
+    let mut generated_components = HashSet::new();
+
+    for (output_path, ast) in &parsed_inputs {
+        generate_import_dependencies(
+            ast,
+            output_path.clone(),
+            options.keep_intermediate,
+            &mut generated_components,
+        )?;
+    }
+
+    for (output_path, ast) in parsed_inputs {
+        let print_ast = !component_name(&ast)
+            .as_ref()
+            .is_some_and(|name| dependency_components.contains(name));
+
+        generate_python(
+            ast,
+            output_path,
+            options.keep_intermediate,
+            print_ast,
+            &mut generated_components,
+        )?;
     }
 
     Ok(())
 }
 
-fn generate_python(
-    input_path: &Path,
+fn generate_import_dependencies(
+    ast: &Ast,
     output_path: Option<PathBuf>,
     keep_intermediate: bool,
+    generated_components: &mut HashSet<String>,
 ) -> Result<(), Box<dyn Error>> {
+    match ast {
+        Ast::SEQ(nodes) => {
+            for node in nodes {
+                generate_import_dependencies(
+                    node,
+                    output_path.clone(),
+                    keep_intermediate,
+                    generated_components,
+                )?;
+            }
+        }
+        Ast::Import {
+            ast: Some(import_ast),
+            ..
+        } => {
+            generate_import_dependencies(
+                import_ast,
+                output_path.clone(),
+                keep_intermediate,
+                generated_components,
+            )?;
+            generate_python(
+                import_ast.as_ref().clone(),
+                output_path,
+                keep_intermediate,
+                false,
+                generated_components,
+            )?;
+        }
+        _ => {}
+    }
+
+    Ok(())
+}
+
+fn parse_input(input_path: &Path) -> Result<Ast, Box<dyn Error>> {
     let source = read_to_string(input_path)?;
-    let mut parser = Parser::new(&source);
+    let mut parser = Parser::new_with_path(&source, input_path);
 
     parser.next_token();
-    let ast = parser.namespace();
+    Ok(parser.namespace())
+}
 
-    println!("Syntaxe valide");
-    println!("{:#?}", ast);
+fn generate_python(
+    ast: Ast,
+    output_path: Option<PathBuf>,
+    keep_intermediate: bool,
+    print_ast: bool,
+    generated_components: &mut HashSet<String>,
+) -> Result<(), Box<dyn Error>> {
+    if let Some(name) = component_name(&ast)
+        && !generated_components.insert(name)
+    {
+        return Ok(());
+    }
+
+    if print_ast {
+        println!("Syntaxe valide");
+        println!("{:#?}", ast);
+    }
 
     let gen_p = GenPython::new(ast)
         .with_keep_intermediate(keep_intermediate)
@@ -43,6 +123,45 @@ fn generate_python(
     gen_p.generate()?;
 
     Ok(())
+}
+
+fn dependency_component_names(parsed_inputs: &[(Option<PathBuf>, Ast)]) -> HashSet<String> {
+    let mut names = HashSet::new();
+
+    for (_, ast) in parsed_inputs {
+        collect_dependency_component_names(ast, &mut names);
+    }
+
+    names
+}
+
+fn collect_dependency_component_names(ast: &Ast, names: &mut HashSet<String>) {
+    match ast {
+        Ast::SEQ(nodes) => {
+            for node in nodes {
+                collect_dependency_component_names(node, names);
+            }
+        }
+        Ast::Import {
+            ast: Some(import_ast),
+            ..
+        } => {
+            if let Some(name) = component_name(import_ast) {
+                names.insert(name);
+            }
+            collect_dependency_component_names(import_ast, names);
+        }
+        _ => {}
+    }
+}
+
+fn component_name(ast: &Ast) -> Option<String> {
+    match ast {
+        Ast::SEQ(nodes) => nodes.iter().find_map(component_name),
+        Ast::Namespace { body, .. } => component_name(body),
+        Ast::Component { name, .. } => Some(name.clone()),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Default)]
